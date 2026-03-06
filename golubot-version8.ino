@@ -20,6 +20,7 @@ TFT_eSPI tft = TFT_eSPI();
 #define TOUCH_PIN 13
 #define TOUCH_THRESHOLD_DEFAULT 40  // Fallback if calibration fails
 #define TOUCH_THRESHOLD_PERCENT 60  // Touch triggers below this % of baseline
+#define TOUCH_THRESHOLD_MIN 5       // Minimum valid threshold
 #define TOUCH_SAMPLES 10            // Number of samples for calibration
 int touchThreshold = TOUCH_THRESHOLD_DEFAULT;
 int touchBaseline = 0;
@@ -40,6 +41,9 @@ int touchBaseline = 0;
 #define RING_COLOR  0x2945  // Dark blue-grey
 #define RING_HAPPY  0x0410  // Green tint when happy
 #define RING_TIRED  0x4000  // Red tint when tired
+#define SKIN_TONE   0xFDD0  // Anime character skin color
+#define CHAT_BOT_BG   0x0210  // Chat bot bubble background
+#define CHAT_USER_BG  0x2104  // Chat user bubble background
 
 // --- MODES ---
 enum AppMode {
@@ -200,7 +204,7 @@ void setup() {
   }
   touchBaseline = sum / TOUCH_SAMPLES;
   touchThreshold = (touchBaseline * TOUCH_THRESHOLD_PERCENT) / 100;
-  if (touchThreshold < 5) touchThreshold = TOUCH_THRESHOLD_DEFAULT;
+  if (touchThreshold < TOUCH_THRESHOLD_MIN) touchThreshold = TOUCH_THRESHOLD_DEFAULT;
 
   Serial.print("Touch baseline: ");
   Serial.println(touchBaseline);
@@ -1050,7 +1054,7 @@ void renderChat(unsigned long now) {
   tft.print("CHAT");
 
   // Golubot's message (left-aligned speech bubble)
-  tft.fillRoundRect(20, 55, 200, 30, 8, 0x0210);
+  tft.fillRoundRect(20, 55, 200, 30, 8, CHAT_BOT_BG);
   tft.setTextColor(TFT_CYAN);
   tft.setTextSize(1);
   tft.setCursor(30, 60);
@@ -1058,7 +1062,7 @@ void renderChat(unsigned long now) {
   tft.print(chatMessages[chatIndex]);
 
   // Reply bubble (right-aligned)
-  tft.fillRoundRect(20, 95, 200, 30, 8, 0x2104);
+  tft.fillRoundRect(20, 95, 200, 30, 8, CHAT_USER_BG);
   tft.setTextColor(TFT_YELLOW);
   tft.setCursor(30, 100);
   tft.print("You: ");
@@ -1095,7 +1099,7 @@ void drawNarutoFace() {
     tft.fillTriangle(CX + i, 45, CX + i - 8, 75, CX + i + 8, 75, TFT_ORANGE);
   }
   // Face circle
-  tft.fillCircle(CX, 100, 35, 0xFDD0);  // Skin tone
+  tft.fillCircle(CX, 100, 35, SKIN_TONE);  // Skin tone
   // Headband
   tft.fillRect(CX - 38, 78, 76, 10, 0x001F);  // Blue
   tft.fillRect(CX - 6, 80, 12, 6, TFT_DARKGREY);  // Metal plate
@@ -1134,7 +1138,7 @@ void drawGojoFace() {
     tft.fillTriangle(CX + i, 48, CX + i - 6, 78, CX + i + 6, 78, TFT_WHITE);
   }
   // Face circle
-  tft.fillCircle(CX, 100, 35, 0xFDD0);  // Skin tone
+  tft.fillCircle(CX, 100, 35, SKIN_TONE);  // Skin tone
   // Blindfold / Six Eyes
   tft.fillRect(CX - 38, 90, 76, 12, 0x0010);  // Dark blue blindfold
   // Glowing blue eyes through blindfold
@@ -1171,7 +1175,7 @@ void drawLuffyFace() {
   tft.fillRect(CX - 30, 55, 60, 12, TFT_YELLOW);
   tft.fillRect(CX - 28, 62, 56, 3, TFT_RED);  // Hat band
   // Face circle
-  tft.fillCircle(CX, 100, 35, 0xFDD0);  // Skin tone
+  tft.fillCircle(CX, 100, 35, SKIN_TONE);  // Skin tone
   // Eyes - big and round
   tft.fillCircle(CX - 12, 96, 6, TFT_WHITE);
   tft.fillCircle(CX + 12, 96, 6, TFT_WHITE);
