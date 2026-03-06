@@ -25,6 +25,7 @@ TFT_eSPI tft = TFT_eSPI();
 #define TOUCH_SAMPLES 16            // Number of samples for calibration
 #define TOUCH_DEBOUNCE_MS 25        // Minimum ms a touch must last to register
 #define TOUCH_RECAL_INTERVAL 30000  // Re-calibrate every 30 seconds when idle
+#define TOUCH_HYSTERESIS_DELTA 10   // Extra margin added to release threshold fallback
 int touchThreshold = TOUCH_THRESHOLD_DEFAULT;
 int touchReleaseThreshold = TOUCH_THRESHOLD_DEFAULT;
 int touchBaseline = 0;
@@ -50,6 +51,7 @@ unsigned long touchDebounceStart = 0;
 #define RING_COLOR  0x2945  // Dark blue-grey
 #define RING_HAPPY  0x0410  // Green tint when happy
 #define RING_TIRED  0x4000  // Red tint when tired
+#define BLUSH_LIGHT  0xFC96  // Lighter pink center for gradient blush
 #define SKIN_TONE   0xFDD0  // Anime character skin color
 #define CHAT_BOT_BG   0x0210  // Chat bot bubble background
 #define CHAT_USER_BG  0x2104  // Chat user bubble background
@@ -219,7 +221,7 @@ void setup() {
   touchReleaseThreshold = (touchBaseline * TOUCH_RELEASE_PERCENT) / 100;
   if (touchThreshold < TOUCH_THRESHOLD_MIN) {
     touchThreshold = TOUCH_THRESHOLD_DEFAULT;
-    touchReleaseThreshold = TOUCH_THRESHOLD_DEFAULT + 10;
+    touchReleaseThreshold = TOUCH_THRESHOLD_DEFAULT + TOUCH_HYSTERESIS_DELTA;
   }
   lastRecalTime = millis();
 
@@ -294,7 +296,7 @@ bool readTouch() {
       touchReleaseThreshold = (touchBaseline * TOUCH_RELEASE_PERCENT) / 100;
       if (touchThreshold < TOUCH_THRESHOLD_MIN) {
         touchThreshold = TOUCH_THRESHOLD_DEFAULT;
-        touchReleaseThreshold = TOUCH_THRESHOLD_DEFAULT + 10;
+        touchReleaseThreshold = TOUCH_THRESHOLD_DEFAULT + TOUCH_HYSTERESIS_DELTA;
       }
     }
   }
@@ -327,7 +329,7 @@ bool readTouch() {
     if (now - touchDebounceStart >= TOUCH_DEBOUNCE_MS) {
       touchDebounced = true;
     }
-    return isTouched;  // Keep previous state until debounce clears
+    return false;  // Not yet debounced, keep as not-touched
   }
   if (!rawTouch) {
     touchDebounceStart = 0;
@@ -726,8 +728,8 @@ void drawCheeks(Emotion emotion) {
     // Soft blush circles (two layers for gradient effect)
     tft.fillCircle(46, 140, 10, BLUSH_COLOR);
     tft.fillCircle(194, 140, 10, BLUSH_COLOR);
-    tft.fillCircle(46, 140, 6, 0xFC96);  // Lighter pink center
-    tft.fillCircle(194, 140, 6, 0xFC96);
+    tft.fillCircle(46, 140, 6, BLUSH_LIGHT);  // Lighter pink center
+    tft.fillCircle(194, 140, 6, BLUSH_LIGHT);
   }
 }
 
