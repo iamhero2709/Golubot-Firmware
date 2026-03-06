@@ -19,11 +19,18 @@ TFT_eSPI tft = TFT_eSPI();
 #define USE_CAPACITIVE_TOUCH true
 #define TOUCH_PIN 13
 #define TOUCH_THRESHOLD_DEFAULT 40  // Fallback if calibration fails
-#define TOUCH_THRESHOLD_PERCENT 60  // Touch triggers below this % of baseline
+#define TOUCH_THRESHOLD_PERCENT 55  // Touch triggers below this % of baseline
+#define TOUCH_RELEASE_PERCENT 70    // Release threshold (hysteresis) above this %
 #define TOUCH_THRESHOLD_MIN 5       // Minimum valid threshold
-#define TOUCH_SAMPLES 10            // Number of samples for calibration
+#define TOUCH_SAMPLES 16            // Number of samples for calibration
+#define TOUCH_DEBOUNCE_MS 25        // Minimum ms a touch must last to register
+#define TOUCH_RECAL_INTERVAL 30000  // Re-calibrate every 30 seconds when idle
 int touchThreshold = TOUCH_THRESHOLD_DEFAULT;
+int touchReleaseThreshold = TOUCH_THRESHOLD_DEFAULT;
 int touchBaseline = 0;
+unsigned long lastRecalTime = 0;
+bool touchDebounced = false;
+unsigned long touchDebounceStart = 0;
 
 // --- DISPLAY (GC9A01 240x240 Round) ---
 #define SCREEN_W 240
@@ -34,7 +41,9 @@ int touchBaseline = 0;
 // --- COLORS ---
 #define BG_COLOR    TFT_BLACK
 #define EYE_WHITE   0xFFFF
-#define EYE_COLOR   TFT_CYAN
+#define EYE_COLOR   0x867D  // Sky blue (emo-style)
+#define IRIS_COLOR  0x5DDF  // Bright sky blue iris
+#define IRIS_RING   0x4B5F  // Deeper sky blue outer iris
 #define PUPIL_COLOR 0x0000
 #define MOUTH_COLOR TFT_WHITE
 #define BLUSH_COLOR 0xFB56  // Pinkish
@@ -199,15 +208,20 @@ void setup() {
 #endif
 
   // Auto-calibrate: read baseline when nothing is touching
-  delay(100); // Let touch peripheral stabilize
+  delay(200); // Let touch peripheral stabilize
   long sum = 0;
   for (int i = 0; i < TOUCH_SAMPLES; i++) {
     sum += touchRead(TOUCH_PIN);
-    delay(10);
+    delay(15);
   }
   touchBaseline = sum / TOUCH_SAMPLES;
   touchThreshold = (touchBaseline * TOUCH_THRESHOLD_PERCENT) / 100;
-  if (touchThreshold < TOUCH_THRESHOLD_MIN) touchThreshold = TOUCH_THRESHOLD_DEFAULT;
+  touchReleaseThreshold = (touchBaseline * TOUCH_RELEASE_PERCENT) / 100;
+  if (touchThreshold < TOUCH_THRESHOLD_MIN) {
+    touchThreshold = TOUCH_THRESHOLD_DEFAULT;
+    touchReleaseThreshold = TOUCH_THRESHOLD_DEFAULT + 10;
+  }
+  lastRecalTime = millis();
 
   Serial.print("Touch baseline: ");
   Serial.println(touchBaseline);
@@ -252,24 +266,75 @@ void setup() {
 // ==========================================
 bool readTouch() {
 #if USE_CAPACITIVE_TOUCH
-  // Average multiple samples for noise reduction
-  int val = 0;
-  for (int i = 0; i < 3; i++) {
-    val += touchRead(TOUCH_PIN);
+  // Average 5 samples with outlier rejection for noise reduction
+  int samples[5];
+  for (int i = 0; i < 5; i++) {
+    samples[i] = touchRead(TOUCH_PIN);
+    delayMicroseconds(200);
   }
-  val /= 3;
+  // Simple sort for median filtering
+  for (int i = 0; i < 4; i++) {
+    for (int j = i + 1; j < 5; j++) {
+      if (samples[i] > samples[j]) {
+        int tmp = samples[i]; samples[i] = samples[j]; samples[j] = tmp;
+      }
+    }
+  }
+  // Use middle 3 samples (discard lowest and highest)
+  int val = (samples[1] + samples[2] + samples[3]) / 3;
+
+  // Periodic re-calibration when not touching
+  unsigned long now = millis();
+  if (!isTouched && (now - lastRecalTime > TOUCH_RECAL_INTERVAL)) {
+    lastRecalTime = now;
+    // Only update if reading is near current baseline (not being touched)
+    if (val > touchReleaseThreshold) {
+      touchBaseline = (touchBaseline * 3 + val) / 4;  // Smooth update
+      touchThreshold = (touchBaseline * TOUCH_THRESHOLD_PERCENT) / 100;
+      touchReleaseThreshold = (touchBaseline * TOUCH_RELEASE_PERCENT) / 100;
+      if (touchThreshold < TOUCH_THRESHOLD_MIN) {
+        touchThreshold = TOUCH_THRESHOLD_DEFAULT;
+        touchReleaseThreshold = TOUCH_THRESHOLD_DEFAULT + 10;
+      }
+    }
+  }
 
   // Debug output every 500ms
   static unsigned long lastDebug = 0;
-  if (millis() - lastDebug > 500) {
-    lastDebug = millis();
+  if (now - lastDebug > 500) {
+    lastDebug = now;
     Serial.print("Touch: ");
     Serial.print(val);
-    Serial.print(" / Threshold: ");
-    Serial.println(touchThreshold);
+    Serial.print(" / Thresh: ");
+    Serial.print(touchThreshold);
+    Serial.print(" / Base: ");
+    Serial.println(touchBaseline);
   }
 
-  return val < touchThreshold;
+  // Hysteresis: different thresholds for press vs release
+  bool rawTouch;
+  if (isTouched) {
+    rawTouch = val < touchReleaseThreshold;  // Higher threshold to release
+  } else {
+    rawTouch = val < touchThreshold;  // Lower threshold to press
+  }
+
+  // Software debounce
+  if (rawTouch && !touchDebounced) {
+    if (touchDebounceStart == 0) {
+      touchDebounceStart = now;
+    }
+    if (now - touchDebounceStart >= TOUCH_DEBOUNCE_MS) {
+      touchDebounced = true;
+    }
+    return isTouched;  // Keep previous state until debounce clears
+  }
+  if (!rawTouch) {
+    touchDebounceStart = 0;
+    touchDebounced = false;
+  }
+
+  return rawTouch && touchDebounced;
 #else
   return digitalRead(TOUCH_PIN) == HIGH;
 #endif
@@ -336,8 +401,8 @@ void loop() {
     }
   }
 
-  // Multi-tap evaluation (wait 400ms for tap sequence to complete)
-  if (tapCount > 0 && (now - lastTapTime > 400) && !isHolding) {
+  // Multi-tap evaluation (wait 500ms for tap sequence to complete)
+  if (tapCount > 0 && (now - lastTapTime > 500) && !isHolding) {
     handleTaps(tapCount, now);
     tapCount = 0;
   }
@@ -385,11 +450,26 @@ void handleTaps(int taps, unsigned long now) {
         speechClearTime = now + 1500;
       }
       else if (taps == 3) {
+        currentEmotion = DANCE;
+        currentSpeech = "Party!";
+        speechClearTime = now + 2000;
+      }
+      else if (taps == 4) {
+        currentEmotion = HEART;
+        currentSpeech = "Love you!";
+        speechClearTime = now + 2000;
+      }
+      else if (taps == 5) {
+        currentEmotion = SINGING;
+        currentSpeech = "La la la~";
+        speechClearTime = now + 2000;
+      }
+      else if (taps == 6) {
         currentMode = MODE_DASHBOARD;
         tft.fillScreen(BG_COLOR);
       }
-      else if (taps >= 4) {
-        currentMode = MODE_HACKER;
+      else if (taps >= 7) {
+        currentMode = MODE_MENU;
         tft.fillScreen(BG_COLOR);
       }
       break;
@@ -508,95 +588,133 @@ void updatePupils(unsigned long now) {
 }
 
 void drawEye(int cx, int cy, float offX, float offY, float openness, bool isAngry) {
-  int eyeW = 26;
-  int eyeH = (int)(20 * openness);
+  int eyeW = 28;
+  int eyeH = (int)(24 * openness);
 
   if (eyeH < 2) {
-    // Closed eye - just a line
-    tft.fillRect(cx - eyeW, cy - 1, eyeW * 2, 3, EYE_COLOR);
+    // Closed eye - cute curved line
+    for (int i = -eyeW; i <= eyeW; i++) {
+      int y = cy + (i * i) / (eyeW * 3);
+      tft.fillRect(cx + i, y, 1, 2, EYE_COLOR);
+    }
     return;
   }
 
-  // Eye white oval
+  // Eye white oval (slightly larger for cute look)
   tft.fillEllipse(cx, cy, eyeW, eyeH, EYE_WHITE);
 
-  // Pupil with highlight
+  // Outer iris ring (sky blue)
   int px = cx + (int)offX;
   int py = cy + (int)offY;
-  tft.fillCircle(px, py, 8, PUPIL_COLOR);
-  tft.fillCircle(px + 3, py - 3, 2, EYE_WHITE);
+  tft.fillCircle(px, py, 12, IRIS_RING);
 
-  // Angry eyelid overlay
+  // Inner iris (bright sky blue)
+  tft.fillCircle(px, py, 10, IRIS_COLOR);
+
+  // Pupil (black center)
+  tft.fillCircle(px, py, 5, PUPIL_COLOR);
+
+  // Primary highlight (top-right, large)
+  tft.fillCircle(px + 4, py - 4, 3, EYE_WHITE);
+  // Secondary highlight (bottom-left, small)
+  tft.fillCircle(px - 3, py + 2, 1, EYE_WHITE);
+
+  // Thin eyelid line for definition
+  for (int i = -eyeW; i <= eyeW; i++) {
+    float t = (float)i / (float)eyeW;
+    int ey = cy - (int)(eyeH * sqrt(1.0 - t * t));
+    if (ey >= cy - eyeH && ey <= cy + eyeH) {
+      tft.drawPixel(cx + i, ey, EYE_COLOR);
+    }
+  }
+
+  // Angry eyelid overlay (flat top)
   if (isAngry && openness > 0.3) {
-    tft.fillRect(cx - eyeW - 1, cy - eyeH - 1, eyeW * 2 + 2, 8, BG_COLOR);
+    tft.fillRect(cx - eyeW - 1, cy - eyeH - 1, eyeW * 2 + 2, 10, BG_COLOR);
   }
 }
 
 void drawMouth(Emotion emotion) {
   int mx = CX;
-  int my = 155;
+  int my = 158;
 
   switch (emotion) {
     case HAPPY:
     case EXCITED:
-      // Wide smile arc
-      for (int i = -20; i <= 20; i++) {
-        int y = my + (i * i) / 30;
+      // Wide cute smile arc (thicker, rounder)
+      for (int i = -22; i <= 22; i++) {
+        int y = my + (i * i) / 28;
         tft.fillCircle(mx + i, y, 2, MOUTH_COLOR);
       }
       break;
     case SAD:
-      // Frown arc
+      // Cute frown arc
       for (int i = -15; i <= 15; i++) {
-        int y = my + 8 - (i * i) / 25;
-        tft.fillCircle(mx + i, y, 1, MOUTH_COLOR);
+        int y = my + 10 - (i * i) / 22;
+        tft.fillCircle(mx + i, y, 2, MOUTH_COLOR);
       }
       break;
     case ANGRY:
       // Gritted teeth
-      tft.fillRect(mx - 15, my, 30, 6, MOUTH_COLOR);
+      tft.fillRoundRect(mx - 16, my, 32, 8, 2, MOUTH_COLOR);
       for (int i = 0; i < 5; i++) {
-        tft.drawLine(mx - 15 + i * 8, my, mx - 15 + i * 8, my + 6, BG_COLOR);
+        tft.drawLine(mx - 16 + i * 8, my, mx - 16 + i * 8, my + 8, BG_COLOR);
       }
       break;
     case HEART:
-      // Kiss
-      tft.fillCircle(mx, my + 3, 5, TFT_RED);
+      // Kiss lips
+      tft.fillCircle(mx - 3, my + 3, 5, TFT_RED);
+      tft.fillCircle(mx + 3, my + 3, 5, TFT_RED);
+      tft.fillCircle(mx, my + 6, 3, TFT_RED);
       break;
     case SLEEPING:
-      // Open mouth (snoring)
-      tft.fillCircle(mx, my + 2, 7, MOUTH_COLOR);
-      tft.fillCircle(mx, my, 4, BG_COLOR);
+      // Open mouth (snoring) with cute shape
+      tft.fillCircle(mx, my + 2, 8, MOUTH_COLOR);
+      tft.fillCircle(mx, my, 5, BG_COLOR);
       break;
     case CONFUSED:
       // Wavy line using sine wave
       for (int i = -15; i <= 15; i++) {
-        int y = my + (int)(3.0 * sin((float)i * 0.4));
+        int y = my + (int)(4.0 * sin((float)i * 0.4));
         tft.fillCircle(mx + i, y, 1, MOUTH_COLOR);
       }
       break;
     case SHY:
-      // Small offset mouth
-      tft.fillRect(mx + 5, my, 10, 3, MOUTH_COLOR);
+      // Small offset wavy mouth
+      for (int i = 0; i <= 12; i++) {
+        int y = my + (int)(2.0 * sin((float)i * 0.5));
+        tft.fillRect(mx + i, y, 2, 2, MOUTH_COLOR);
+      }
       break;
     case CURIOUS:
-      // O shape
+      // O shape (rounder)
+      tft.drawCircle(mx, my + 3, 8, MOUTH_COLOR);
       tft.drawCircle(mx, my + 3, 7, MOUTH_COLOR);
       tft.drawCircle(mx, my + 3, 6, MOUTH_COLOR);
       break;
     case BORED:
-      // Flat line
-      tft.fillRect(mx - 12, my, 24, 3, TFT_DARKGREY);
+      // Flat line with slight downturn
+      for (int i = -14; i <= 14; i++) {
+        int y = my + abs(i) / 7;
+        tft.fillRect(mx + i, y, 2, 2, TFT_DARKGREY);
+      }
       break;
     case SINGING:
-      // Open singing mouth (oval)
-      tft.fillEllipse(mx, my + 3, 10, 7, MOUTH_COLOR);
-      tft.fillEllipse(mx, my + 3, 6, 4, BG_COLOR);
+      // Open singing mouth (cute oval)
+      tft.fillEllipse(mx, my + 3, 11, 8, MOUTH_COLOR);
+      tft.fillEllipse(mx, my + 3, 7, 5, BG_COLOR);
+      break;
+    case DANCE:
+      // Big happy grin
+      for (int i = -18; i <= 18; i++) {
+        int y = my + (i * i) / 22;
+        tft.fillCircle(mx + i, y, 2, MOUTH_COLOR);
+      }
       break;
     default:
-      // Normal - gentle smile
-      for (int i = -12; i <= 12; i++) {
-        int y = my + (i * i) / 50;
+      // Normal - gentle cute smile
+      for (int i = -14; i <= 14; i++) {
+        int y = my + (i * i) / 45;
         tft.fillRect(mx + i, y, 2, 2, MOUTH_COLOR);
       }
       break;
@@ -604,9 +722,12 @@ void drawMouth(Emotion emotion) {
 }
 
 void drawCheeks(Emotion emotion) {
-  if (emotion == HAPPY || emotion == SHY || emotion == EXCITED) {
-    tft.fillCircle(48, 138, 8, BLUSH_COLOR);
-    tft.fillCircle(192, 138, 8, BLUSH_COLOR);
+  if (emotion == HAPPY || emotion == SHY || emotion == EXCITED || emotion == HEART || emotion == DANCE) {
+    // Soft blush circles (two layers for gradient effect)
+    tft.fillCircle(46, 140, 10, BLUSH_COLOR);
+    tft.fillCircle(194, 140, 10, BLUSH_COLOR);
+    tft.fillCircle(46, 140, 6, 0xFC96);  // Lighter pink center
+    tft.fillCircle(194, 140, 6, 0xFC96);
   }
 }
 
@@ -668,7 +789,8 @@ void renderFaces(unsigned long now) {
 
   // Full redraw on emotion change
   if (faceNeedsRedraw || currentEmotion != prevDrawnEmotion) {
-    tft.fillScreen(BG_COLOR);
+    // Clear only the inner face area (avoid full screen flash/flicker)
+    tft.fillCircle(CX, CY, 116, BG_COLOR);
 
     // Edge ring - color reflects mood
     uint16_t rc = RING_COLOR;
@@ -681,8 +803,8 @@ void renderFaces(unsigned long now) {
     faceNeedsRedraw = false;
   } else {
     // Partial clear: erase previous pupil positions for smooth animation
-    tft.fillCircle(prevLPX, prevLPY, 10, EYE_WHITE);
-    tft.fillCircle(prevRPX, prevRPY, 10, EYE_WHITE);
+    tft.fillCircle(prevLPX, prevLPY, 14, EYE_WHITE);
+    tft.fillCircle(prevRPX, prevRPY, 14, EYE_WHITE);
   }
 
   // Compute pupil offsets based on emotion
