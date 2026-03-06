@@ -18,7 +18,12 @@ TFT_eSPI tft = TFT_eSPI();
 // Set USE_CAPACITIVE_TOUCH to false for digital touch module (TTP223)
 #define USE_CAPACITIVE_TOUCH true
 #define TOUCH_PIN 13
-#define TOUCH_THRESHOLD 40  // For capacitive mode (lower = more sensitive)
+#define TOUCH_THRESHOLD_DEFAULT 40  // Fallback if calibration fails
+#define TOUCH_THRESHOLD_PERCENT 60  // Touch triggers below this % of baseline
+#define TOUCH_THRESHOLD_MIN 5       // Minimum valid threshold
+#define TOUCH_SAMPLES 10            // Number of samples for calibration
+int touchThreshold = TOUCH_THRESHOLD_DEFAULT;
+int touchBaseline = 0;
 
 // --- DISPLAY (GC9A01 240x240 Round) ---
 #define SCREEN_W 240
@@ -36,21 +41,24 @@ TFT_eSPI tft = TFT_eSPI();
 #define RING_COLOR  0x2945  // Dark blue-grey
 #define RING_HAPPY  0x0410  // Green tint when happy
 #define RING_TIRED  0x4000  // Red tint when tired
+#define SKIN_TONE   0xFDD0  // Anime character skin color
+#define CHAT_BOT_BG   0x0210  // Chat bot bubble background
+#define CHAT_USER_BG  0x2104  // Chat user bubble background
 
 // --- MODES ---
 enum AppMode {
   MODE_FACES, MODE_MENU, MODE_FEED, MODE_GAME,
   MODE_DASHBOARD, MODE_MOTIVATION, MODE_POMODORO,
-  MODE_HACKER, MODE_MAGICBALL
+  MODE_HACKER, MODE_MAGICBALL, MODE_CHAT, MODE_ANIME
 };
 AppMode currentMode = MODE_FACES;
 
 // --- MENU ---
-const int MENU_ITEMS = 8;
+const int MENU_ITEMS = 10;
 String menuOptions[MENU_ITEMS] = {
   "Pomodoro", "Flappy", "Feed Me",
   "8-Ball", "Dashboard", "Quotes",
-  "Matrix", "Exit"
+  "Matrix", "Chat", "Anime", "Exit"
 };
 int menuIndex = 0;
 
@@ -58,7 +66,7 @@ int menuIndex = 0;
 enum Emotion {
   NORMAL, HAPPY, SAD, LOOK_LEFT, LOOK_RIGHT,
   HEART, DANCE, SLEEPING, EXCITED, ANGRY,
-  CONFUSED, SHY, CURIOUS, BORED
+  CONFUSED, SHY, CURIOUS, BORED, SINGING
 };
 Emotion currentEmotion = NORMAL;
 Emotion prevDrawnEmotion = NORMAL;
@@ -137,6 +145,39 @@ String animeQuotes[7] = {
 };
 int quoteIndex = 0;
 
+// --- CHAT MESSAGES ---
+const int CHAT_MSG_COUNT = 12;
+String chatMessages[CHAT_MSG_COUNT] = {
+  "Hey there! :)",
+  "How's your day?",
+  "I'm feeling great!",
+  "Let's play together!",
+  "Feed me please!",
+  "I love you!",
+  "What's up?",
+  "Time for a break?",
+  "You're awesome!",
+  "Stay positive!",
+  "I missed you!",
+  "Tell me a story!"
+};
+int chatIndex = 0;
+int chatReplyIndex = 0;
+String chatReplyMessages[8] = {
+  "That's cool!",
+  "Hehehe! :D",
+  "Really? Wow!",
+  "Tell me more!",
+  "I agree!",
+  "Interesting...",
+  "You're funny!",
+  "Aww, thanks!"
+};
+
+// --- ANIME FACE STATE ---
+int animeCharIndex = 0;
+const int ANIME_CHARS = 3;
+
 // --- UTILITY ---
 float lerpf(float a, float b, float t) {
   return a + (b - a) * constrain(t, 0.0f, 1.0f);
@@ -149,7 +190,27 @@ void setup() {
   Serial.begin(115200);
   Serial.println("GOLUBOT OS v10.0 - Advanced Desk Pet");
 
-#if !USE_CAPACITIVE_TOUCH
+#if USE_CAPACITIVE_TOUCH
+  // Configure touch measurement cycles for reliable readings
+  // This fixes touch not working after re-flashing on newer ESP32 cores
+  touchSetCycles(0x1000, 0xFFFF);
+
+  // Auto-calibrate: read baseline when nothing is touching
+  delay(100); // Let touch peripheral stabilize
+  long sum = 0;
+  for (int i = 0; i < TOUCH_SAMPLES; i++) {
+    sum += touchRead(TOUCH_PIN);
+    delay(10);
+  }
+  touchBaseline = sum / TOUCH_SAMPLES;
+  touchThreshold = (touchBaseline * TOUCH_THRESHOLD_PERCENT) / 100;
+  if (touchThreshold < TOUCH_THRESHOLD_MIN) touchThreshold = TOUCH_THRESHOLD_DEFAULT;
+
+  Serial.print("Touch baseline: ");
+  Serial.println(touchBaseline);
+  Serial.print("Touch threshold: ");
+  Serial.println(touchThreshold);
+#else
   pinMode(TOUCH_PIN, INPUT);
 #endif
 
@@ -188,7 +249,24 @@ void setup() {
 // ==========================================
 bool readTouch() {
 #if USE_CAPACITIVE_TOUCH
-  return touchRead(TOUCH_PIN) < TOUCH_THRESHOLD;
+  // Average multiple samples for noise reduction
+  int val = 0;
+  for (int i = 0; i < 3; i++) {
+    val += touchRead(TOUCH_PIN);
+  }
+  val /= 3;
+
+  // Debug output every 500ms
+  static unsigned long lastDebug = 0;
+  if (millis() - lastDebug > 500) {
+    lastDebug = millis();
+    Serial.print("Touch: ");
+    Serial.print(val);
+    Serial.print(" / Threshold: ");
+    Serial.println(touchThreshold);
+  }
+
+  return val < touchThreshold;
 #else
   return digitalRead(TOUCH_PIN) == HIGH;
 #endif
@@ -244,7 +322,9 @@ void loop() {
           case 4: currentMode = MODE_DASHBOARD; break;
           case 5: currentMode = MODE_MOTIVATION; quoteIndex = random(0, 7); break;
           case 6: currentMode = MODE_HACKER; break;
-          case 7: currentMode = MODE_FACES; break;
+          case 7: currentMode = MODE_CHAT; chatIndex = 0; break;
+          case 8: currentMode = MODE_ANIME; animeCharIndex = 0; break;
+          case 9: currentMode = MODE_FACES; break;
         }
       }
       else {
@@ -279,6 +359,8 @@ void loop() {
     case MODE_POMODORO:   renderPomodoro(now); break;
     case MODE_HACKER:     renderHackerMode(now); break;
     case MODE_MAGICBALL:  renderMagicBall(now); break;
+    case MODE_CHAT:       renderChat(now); break;
+    case MODE_ANIME:      renderAnime(now); break;
   }
 }
 
@@ -341,6 +423,21 @@ void handleTaps(int taps, unsigned long now) {
     case MODE_MAGICBALL:
       if (taps == 1) {
         currentAnswer = magicAnswers[random(0, 8)];
+        tft.fillScreen(BG_COLOR);
+      }
+      break;
+
+    case MODE_CHAT:
+      if (taps == 1) {
+        chatIndex = (chatIndex + 1) % CHAT_MSG_COUNT;
+        chatReplyIndex = random(0, 8);
+        tft.fillScreen(BG_COLOR);
+      }
+      break;
+
+    case MODE_ANIME:
+      if (taps == 1) {
+        animeCharIndex = (animeCharIndex + 1) % ANIME_CHARS;
         tft.fillScreen(BG_COLOR);
       }
       break;
@@ -488,6 +585,11 @@ void drawMouth(Emotion emotion) {
       // Flat line
       tft.fillRect(mx - 12, my, 24, 3, TFT_DARKGREY);
       break;
+    case SINGING:
+      // Open singing mouth (oval)
+      tft.fillEllipse(mx, my + 3, 10, 7, MOUTH_COLOR);
+      tft.fillEllipse(mx, my + 3, 6, 4, BG_COLOR);
+      break;
     default:
       // Normal - gentle smile
       for (int i = -12; i <= 12; i++) {
@@ -539,7 +641,7 @@ void renderFaces(unsigned long now) {
       speechClearTime = now + 2000;
     }
     else {
-      int rnd = random(0, 100);
+      int rnd = random(0, 110);
       if      (rnd < 8)  { currentEmotion = HEART;      currentSpeech = "Love you!";   speechClearTime = now + 2000; }
       else if (rnd < 16) { currentEmotion = DANCE;      currentSpeech = "Party!";      speechClearTime = now + 3000; }
       else if (rnd < 24) { currentEmotion = EXCITED;    currentSpeech = "Wow!";        speechClearTime = now + 2000; }
@@ -549,6 +651,7 @@ void renderFaces(unsigned long now) {
       else if (rnd < 54) { currentEmotion = LOOK_LEFT;  currentSpeech = ""; }
       else if (rnd < 64) { currentEmotion = LOOK_RIGHT; currentSpeech = ""; }
       else if (rnd < 70) { currentEmotion = CONFUSED;   currentSpeech = "What?";       speechClearTime = now + 2000; }
+      else if (rnd < 80) { currentEmotion = SINGING;    currentSpeech = "La la la~";   speechClearTime = now + 3000; }
       else               { currentEmotion = NORMAL;     currentSpeech = ""; }
     }
   }
@@ -595,6 +698,7 @@ void renderFaces(unsigned long now) {
     case ANGRY:      angry = true; lpx = 0; rpx = 0; break;
     case SHY:        lpx = 8; rpx = -8; break;
     case CURIOUS:    lpy = -3; rpy = -3; break;
+    case SINGING:    openL = max(eyeOpenness, 0.7f); openR = openL; break;
     default: break;
   }
 
@@ -631,6 +735,27 @@ void renderFaces(unsigned long now) {
       tft.setTextSize(2);
       tft.setCursor(170 + f * 4, 72 - f * 8);
       tft.print("Z");
+    }
+  }
+
+  // Singing music notes animation
+  if (currentEmotion == SINGING) {
+    int f = (now / 400) % 4;
+    tft.setTextColor(TFT_MAGENTA);
+    tft.setTextSize(1);
+    // Left note - bouncing up
+    tft.setCursor(50 + f * 2, 80 - f * 6);
+    tft.print("*");
+    // Right note - bouncing up offset
+    tft.setTextColor(TFT_CYAN);
+    tft.setCursor(175 - f * 2, 85 - f * 5);
+    tft.print("*");
+    // Center note
+    if (f > 1) {
+      tft.setTextColor(TFT_YELLOW);
+      tft.setTextSize(2);
+      tft.setCursor(CX + 20, 70 - f * 4);
+      tft.print("~");
     }
   }
 
@@ -915,4 +1040,184 @@ void renderGame(unsigned long now) {
   tft.print(score);
   tft.fillCircle(60, (int)pY, 10, EYE_COLOR);
   tft.fillRect(obsX, 140, 15, 32, TFT_RED);
+}
+
+// ==========================================
+// CHAT MODE (Text Communication)
+// ==========================================
+void renderChat(unsigned long now) {
+  tft.drawCircle(CX, CY, 115, TFT_CYAN);
+
+  tft.setTextColor(TFT_CYAN);
+  tft.setTextSize(2);
+  tft.setCursor(80, 25);
+  tft.print("CHAT");
+
+  // Golubot's message (left-aligned speech bubble)
+  tft.fillRoundRect(20, 55, 200, 30, 8, CHAT_BOT_BG);
+  tft.setTextColor(TFT_CYAN);
+  tft.setTextSize(1);
+  tft.setCursor(30, 60);
+  tft.print("Bot: ");
+  tft.print(chatMessages[chatIndex]);
+
+  // Reply bubble (right-aligned)
+  tft.fillRoundRect(20, 95, 200, 30, 8, CHAT_USER_BG);
+  tft.setTextColor(TFT_YELLOW);
+  tft.setCursor(30, 100);
+  tft.print("You: ");
+  tft.print(chatReplyMessages[chatReplyIndex]);
+
+  // Animated typing indicator
+  int dots = (now / 400) % 4;
+  tft.setTextColor(TFT_DARKGREY);
+  tft.setCursor(30, 140);
+  tft.print("typing");
+  for (int i = 0; i < dots; i++) tft.print(".");
+
+  // Mini face
+  tft.fillCircle(CX, 175, 12, EYE_COLOR);
+  tft.fillCircle(CX - 4, 173, 2, BG_COLOR);
+  tft.fillCircle(CX + 4, 173, 2, BG_COLOR);
+  // Smile
+  for (int i = -4; i <= 4; i++) {
+    tft.drawPixel(CX + i, 178 + (i * i) / 12, BG_COLOR);
+  }
+
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_DARKGREY);
+  tft.setCursor(35, 210);
+  tft.print("Tap=Next | Hold=Exit");
+}
+
+// ==========================================
+// ANIME FACE MODE (Pixel Art Characters)
+// ==========================================
+void drawNarutoFace() {
+  // Orange/yellow spiky hair
+  for (int i = -30; i <= 30; i += 10) {
+    tft.fillTriangle(CX + i, 45, CX + i - 8, 75, CX + i + 8, 75, TFT_ORANGE);
+  }
+  // Face circle
+  tft.fillCircle(CX, 100, 35, SKIN_TONE);  // Skin tone
+  // Headband
+  tft.fillRect(CX - 38, 78, 76, 10, 0x001F);  // Blue
+  tft.fillRect(CX - 6, 80, 12, 6, TFT_DARKGREY);  // Metal plate
+  // Eyes
+  tft.fillCircle(CX - 12, 98, 5, TFT_WHITE);
+  tft.fillCircle(CX + 12, 98, 5, TFT_WHITE);
+  tft.fillCircle(CX - 12, 98, 3, 0x001F);  // Blue iris
+  tft.fillCircle(CX + 12, 98, 3, 0x001F);
+  tft.fillCircle(CX - 12, 98, 1, TFT_BLACK);
+  tft.fillCircle(CX + 12, 98, 1, TFT_BLACK);
+  // Sage Mode orange marks around eyes
+  tft.fillRect(CX - 20, 94, 4, 8, TFT_ORANGE);
+  tft.fillRect(CX + 16, 94, 4, 8, TFT_ORANGE);
+  // Whisker marks
+  for (int i = 0; i < 3; i++) {
+    tft.drawLine(CX - 30, 105 + i * 4, CX - 18, 103 + i * 4, TFT_DARKGREY);
+    tft.drawLine(CX + 18, 103 + i * 4, CX + 30, 105 + i * 4, TFT_DARKGREY);
+  }
+  // Smile
+  for (int i = -8; i <= 8; i++) {
+    tft.drawPixel(CX + i, 118 + (i * i) / 20, TFT_RED);
+  }
+  // Label
+  tft.setTextColor(TFT_ORANGE);
+  tft.setTextSize(1);
+  tft.setCursor(CX - 30, 148);
+  tft.print("NARUTO");
+  tft.setCursor(CX - 30, 158);
+  tft.setTextColor(TFT_YELLOW);
+  tft.print("Sage Mode");
+}
+
+void drawGojoFace() {
+  // White spiky hair
+  for (int i = -25; i <= 25; i += 8) {
+    tft.fillTriangle(CX + i, 48, CX + i - 6, 78, CX + i + 6, 78, TFT_WHITE);
+  }
+  // Face circle
+  tft.fillCircle(CX, 100, 35, SKIN_TONE);  // Skin tone
+  // Blindfold / Six Eyes
+  tft.fillRect(CX - 38, 90, 76, 12, 0x0010);  // Dark blue blindfold
+  // Glowing blue eyes through blindfold
+  tft.fillCircle(CX - 12, 96, 4, TFT_CYAN);
+  tft.fillCircle(CX + 12, 96, 4, TFT_CYAN);
+  tft.fillCircle(CX - 12, 96, 2, TFT_WHITE);
+  tft.fillCircle(CX + 12, 96, 2, TFT_WHITE);
+  // Smirk
+  for (int i = -6; i <= 8; i++) {
+    tft.drawPixel(CX + i, 118 + (i * i) / 30, TFT_WHITE);
+  }
+  // Infinity symbol hint
+  tft.setTextColor(TFT_CYAN);
+  tft.setTextSize(2);
+  tft.setCursor(CX - 8, 60);
+  tft.print("~");
+  // Label
+  tft.setTextColor(TFT_CYAN);
+  tft.setTextSize(1);
+  tft.setCursor(CX - 24, 148);
+  tft.print("GOJO");
+  tft.setCursor(CX - 30, 158);
+  tft.setTextColor(TFT_WHITE);
+  tft.print("Six Eyes");
+}
+
+void drawLuffyFace() {
+  // Black messy hair
+  for (int i = -28; i <= 28; i += 7) {
+    tft.fillCircle(CX + i, 70, 10, TFT_BLACK);
+  }
+  // Straw hat
+  tft.fillEllipse(CX, 60, 42, 12, TFT_YELLOW);
+  tft.fillRect(CX - 30, 55, 60, 12, TFT_YELLOW);
+  tft.fillRect(CX - 28, 62, 56, 3, TFT_RED);  // Hat band
+  // Face circle
+  tft.fillCircle(CX, 100, 35, SKIN_TONE);  // Skin tone
+  // Eyes - big and round
+  tft.fillCircle(CX - 12, 96, 6, TFT_WHITE);
+  tft.fillCircle(CX + 12, 96, 6, TFT_WHITE);
+  tft.fillCircle(CX - 12, 96, 3, TFT_BLACK);
+  tft.fillCircle(CX + 12, 96, 3, TFT_BLACK);
+  tft.fillCircle(CX - 13, 95, 1, TFT_WHITE);  // Highlights
+  tft.fillCircle(CX + 11, 95, 1, TFT_WHITE);
+  // Scar under left eye
+  tft.drawLine(CX - 16, 103, CX - 12, 108, TFT_RED);
+  // Big grin
+  for (int i = -15; i <= 15; i++) {
+    int y = 116 + (i * i) / 25;
+    tft.drawPixel(CX + i, y, TFT_WHITE);
+    if (i > -12 && i < 12) tft.drawPixel(CX + i, y - 1, TFT_WHITE);
+  }
+  // Label
+  tft.setTextColor(TFT_RED);
+  tft.setTextSize(1);
+  tft.setCursor(CX - 24, 148);
+  tft.print("LUFFY");
+  tft.setCursor(CX - 36, 158);
+  tft.setTextColor(TFT_YELLOW);
+  tft.print("Straw Hat");
+}
+
+void renderAnime(unsigned long now) {
+  tft.drawCircle(CX, CY, 118, TFT_MAGENTA);
+  tft.drawCircle(CX, CY, 117, TFT_MAGENTA);
+
+  tft.setTextColor(TFT_MAGENTA);
+  tft.setTextSize(2);
+  tft.setCursor(70, 15);
+  tft.print("ANIME");
+
+  switch (animeCharIndex) {
+    case 0: drawNarutoFace(); break;
+    case 1: drawGojoFace(); break;
+    case 2: drawLuffyFace(); break;
+  }
+
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_DARKGREY);
+  tft.setCursor(35, 210);
+  tft.print("Tap=Next | Hold=Exit");
 }

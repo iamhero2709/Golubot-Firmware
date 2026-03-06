@@ -6,9 +6,9 @@ An interactive, EMO-inspired desk pet firmware for ESP32 with a round GC9A01 dis
 
 ### Lifelike AI Pet
 - **Smooth eye animations** with moving pupils and natural blinking
-- **14 emotions**: Normal, Happy, Sad, Excited, Angry, Confused, Shy, Curious, Bored, Heart, Dance, Sleeping, Look Left, Look Right
+- **15 emotions**: Normal, Happy, Sad, Excited, Angry, Confused, Shy, Curious, Bored, Heart, Dance, Sleeping, Singing, Look Left, Look Right
+- **Singing animation** with floating music notes
 - **Mood system**: Energy and happiness levels that change over time and affect behavior
-- **Reactive behavior**: Pet responds differently based on mood state
 - **Speech bubbles** with contextual messages
 - **Blush cheeks** for happy and shy emotions
 - **Mood-colored edge ring** around the round display
@@ -21,6 +21,8 @@ An interactive, EMO-inspired desk pet firmware for ESP32 with a round GC9A01 dis
 - **Dashboard** — View uptime, energy, happiness, and fullness stats
 - **Anime Quotes** — Motivational quotes from popular anime
 - **Matrix Mode** — Falling binary hacker animation
+- **Chat Mode** — Text communication with Golubot (tap to cycle through messages and replies)
+- **Anime Faces** — Pixel art character display featuring Naruto (Sage Mode), Gojo Satoru, and Luffy
 
 ### Controls
 
@@ -96,6 +98,10 @@ An interactive, EMO-inspired desk pet firmware for ESP32 with a round GC9A01 dis
 3. Click **Upload**
 
 ## Touch Configuration
+
+The firmware now includes **auto-calibration** for the capacitive touch sensor. On boot, it reads the baseline touch value and sets a dynamic threshold, which fixes issues where touch stops working after re-flashing.
+
+Debug touch values are printed to Serial (115200 baud) every 500ms — use the Serial Monitor to verify touch readings if you experience issues.
 
 By default, the firmware uses ESP32's built-in capacitive touch. To use a digital touch sensor module (TTP223), change this line in `golubot-version8.ino`:
 
