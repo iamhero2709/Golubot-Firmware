@@ -193,7 +193,10 @@ void setup() {
 #if USE_CAPACITIVE_TOUCH
   // Configure touch measurement cycles for reliable readings
   // This fixes touch not working after re-flashing on newer ESP32 cores
+  // touchSetCycles was removed in ESP32 Arduino Core v3.x (ESP-IDF 5.x)
+#if ESP_ARDUINO_VERSION_MAJOR < 3
   touchSetCycles(0x1000, 0xFFFF);
+#endif
 
   // Auto-calibrate: read baseline when nothing is touching
   delay(100); // Let touch peripheral stabilize
