@@ -34,6 +34,8 @@ TFT_eSPI tft = TFT_eSPI();
 #define MOUTH_COLOR TFT_WHITE
 #define BLUSH_COLOR 0xFB56  // Pinkish
 #define RING_COLOR  0x2945  // Dark blue-grey
+#define RING_HAPPY  0x0410  // Green tint when happy
+#define RING_TIRED  0x4000  // Red tint when tired
 
 // --- MODES ---
 enum AppMode {
@@ -72,6 +74,7 @@ float leftPupilX = 0, leftPupilY = 0;
 float rightPupilX = 0, rightPupilY = 0;
 float targetPupilX = 0, targetPupilY = 0;
 unsigned long lastPupilChange = 0;
+unsigned long nextPupilChangeTime = 0;
 int prevLPX = 80, prevLPY = 105;
 int prevRPX = 160, prevRPY = 105;
 
@@ -392,8 +395,8 @@ void updateBlink(unsigned long now) {
 }
 
 void updatePupils(unsigned long now) {
-  if (now - lastPupilChange > (unsigned long)random(2000, 5000)) {
-    lastPupilChange = now;
+  if (now > nextPupilChangeTime) {
+    nextPupilChangeTime = now + random(2000, 5000);
     targetPupilX = random(-8, 9);
     targetPupilY = random(-5, 6);
     if (moodEnergy < 20) targetPupilY = 3;  // Droopy when tired
@@ -466,11 +469,10 @@ void drawMouth(Emotion emotion) {
       tft.fillCircle(mx, my, 4, BG_COLOR);
       break;
     case CONFUSED:
-      // Wavy line
+      // Wavy line using sine wave
       for (int i = -15; i <= 15; i++) {
-        float s = (float)i * 0.4;
-        int y = my + (int)(3.0 * (s - (int)s > 0.5 ? 1.0 : -1.0));
-        tft.fillRect(mx + i, y, 2, 2, MOUTH_COLOR);
+        int y = my + (int)(3.0 * sin((float)i * 0.4));
+        tft.fillCircle(mx + i, y, 1, MOUTH_COLOR);
       }
       break;
     case SHY:
@@ -564,8 +566,8 @@ void renderFaces(unsigned long now) {
 
     // Edge ring - color reflects mood
     uint16_t rc = RING_COLOR;
-    if (moodHappiness > 70) rc = 0x0410;       // Happy = green tint
-    else if (moodEnergy < 30) rc = 0x4000;      // Tired = red tint
+    if (moodHappiness > 70) rc = RING_HAPPY;
+    else if (moodEnergy < 30) rc = RING_TIRED;
     tft.drawCircle(CX, CY, 118, rc);
     tft.drawCircle(CX, CY, 119, rc);
 
